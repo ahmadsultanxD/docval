@@ -1,0 +1,254 @@
+"""
+extractor.py - Step 3 (complete): turn a real document into filled-in Blocks.
+
+This is where the reader and the model meet. The reader walked the body but saw
+only flat text. The model can hold real identity but was filled by hand. Here we
+open the real document, walk it in order, and for each element work out its true
+type: headings (with level and whether they are really auto-numbered), tables,
+figures, captions (table or figure, real or typed), and plain paragraphs. We
+also record two document-wide facts: whether a real table of contents exists,
+and the heading bookmarks it can link to.
+
+Two parts of this are genuinely tricky, and both were proven on the sample:
+
+  1) Numbering lives on the STYLE, not the paragraph.
+     In the sample, the heading paragraphs carry no numbering of their own.
+     The "1", "2", "3" come from the Heading 1 style, which points at a
+     numbering definition. So to know if a heading is auto-numbered, we cannot
+     just look at the paragraph. If the paragraph has nothing, we follow its
+     style, and that style's parent, and so on, looking for the numbering.
+
+  2) Heading detection must ignore the style NAME.
+     The sample's heading style is named "berschrift1" (German), not
+     "Heading 1". Matching on the English name would fail on a German document.
+     Instead we read the OUTLINE LEVEL, a number 0 to 8 that Word stores to mark
+     a paragraph as a heading of that depth. It is the same in every language.
+     A heading at outline level 0 is level 1, outline level 1 is level 2, etc.
+"""
+
+import re
+import sys
+import docx
+from docx.oxml.ns import qn
+
+from model import Block, DocModel
+
+
+# Caption SEQ labels (lowercased) -> what kind of caption it is.
+# Word stores a hidden "SEQ" field in real captions: "SEQ Table" or
+# "SEQ Figure". This is the reliable signal, and it can be localized, so we
+# map the German labels too. This belongs in config later.
+CAPTION_SEQ_LABELS = {
+    "table": "table", "tabelle": "table",
+    "figure": "figure", "abbildung": "figure",
+}
+
+# A typed caption looks like "Table 1 ..." or "Figure 1 ..." (any language we
+# know). Used only to catch FAKE captions that have no real SEQ field.
+FAKED_CAPTION_RE = re.compile(r"^\s*(table|figure|tabelle|abbildung)\s+\d+", re.I)
+
+
+# --- small helpers for reading the XML ---------------------------------------
+
+def _get_style_id(p_el):
+    """Return the style id applied to a paragraph, or None if it has none."""
+    ppr = p_el.find(qn("w:pPr"))
+    if ppr is None:
+        return None
+    p_style = ppr.find(qn("w:pStyle"))
+    return p_style.get(qn("w:val")) if p_style is not None else None
+
+
+def _style_chain(style_obj):
+    """
+    Yield a style and the styles it is based on, one after another.
+
+    A style can be 'based on' a parent style and inherit its settings. To find
+    inherited numbering or outline level, we walk this chain. The 'seen' set
+    guards against a style accidentally pointing back at itself.
+    """
+    seen = set()
+    current = style_obj
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.base_style
+
+
+def _resolve_outline(p_el, style_obj):
+    """
+    Find the outline level (0..8) for this paragraph, or None if it is not a
+    heading. Look on the paragraph first, then walk up the style chain.
+    """
+    # 1) Is it set directly on the paragraph?
+    ppr = p_el.find(qn("w:pPr"))
+    if ppr is not None:
+        outline = ppr.find(qn("w:outlineLvl"))
+        if outline is not None:
+            return int(outline.get(qn("w:val")))
+    # 2) Otherwise, is it set on the style, or a style it is based on?
+    for style in _style_chain(style_obj):
+        s_ppr = style.element.find(qn("w:pPr"))
+        if s_ppr is not None:
+            s_outline = s_ppr.find(qn("w:outlineLvl"))
+            if s_outline is not None:
+                return int(s_outline.get(qn("w:val")))
+    return None
+
+
+def _resolve_numbering(p_el, style_obj):
+    """
+    Return True if this paragraph is really auto-numbered.
+
+    Same idea as the outline level: check the paragraph, then the style chain.
+    One special case: a numbering id of "0" is Word's way of switching numbering
+    OFF, so we treat that as not numbered.
+    """
+    def read_num_id(ppr):
+        if ppr is None:
+            return None
+        num_pr = ppr.find(qn("w:numPr"))
+        if num_pr is None:
+            return None
+        num_id = num_pr.find(qn("w:numId"))
+        return num_id.get(qn("w:val")) if num_id is not None else None
+
+    # 1) Numbering set directly on the paragraph (this also wins if it is "0").
+    p_ppr = p_el.find(qn("w:pPr"))
+    direct = read_num_id(p_ppr)
+    if direct is not None:
+        return direct != "0"
+    # 2) Otherwise look on the style chain.
+    for style in _style_chain(style_obj):
+        s_num_id = read_num_id(style.element.find(qn("w:pPr")))
+        if s_num_id is not None:
+            return s_num_id != "0"
+    return False
+
+
+def _has_drawing(p_el):
+    """True if the paragraph contains an image (a drawing)."""
+    return p_el.find(".//" + qn("w:drawing")) is not None
+
+
+def _seq_label(p_el):
+    """
+    Return the SEQ label of a real caption ('Table' or 'Figure'), or None.
+
+    A real Word caption is auto-numbered by a hidden SEQ field. We read the
+    field's instruction text and pull out the word after 'SEQ'. If there is no
+    SEQ field, this is not a real caption.
+    """
+    parts = []
+    for instr in p_el.findall(".//" + qn("w:instrText")):
+        if instr.text:
+            parts.append(instr.text)
+    for fld in p_el.findall(".//" + qn("w:fldSimple")):
+        value = fld.get(qn("w:instr"))
+        if value:
+            parts.append(value)
+    match = re.search(r"SEQ\s+(\w+)", " ".join(parts))
+    return match.group(1) if match else None
+
+
+# --- the extractor -----------------------------------------------------------
+
+def extract(path):
+    """Open a .docx and return a DocModel of typed Blocks."""
+    document = docx.Document(path)
+
+    # Build a lookup from style id to the style object, so we can follow the
+    # style chain when resolving numbering and outline level.
+    styles_by_id = {s.style_id: s for s in document.styles if s.style_id}
+
+    model = DocModel()
+    body = document.element.body
+    index = 0
+
+    for child in body:
+        # A table is its own kind of block. We do not look inside it here.
+        if child.tag == qn("w:tbl"):
+            model.blocks.append(Block(index=index, type="table"))
+            index += 1
+            continue
+
+        # We only handle paragraphs beyond this point.
+        if child.tag != qn("w:p"):
+            continue
+
+        p_el = child
+        text = "".join(node.text or "" for node in p_el.iter(qn("w:t")))
+        style_id = _get_style_id(p_el)
+        style_obj = styles_by_id.get(style_id)
+        style_name = style_obj.name if style_obj is not None else None
+
+        outline = _resolve_outline(p_el, style_obj)
+        numbered = _resolve_numbering(p_el, style_obj)
+
+        # While we are on this paragraph, collect two document-wide facts.
+        # (a) Heading bookmarks: real headings carry a "_Toc" bookmark that the
+        #     table of contents links to. We note their names.
+        for bookmark in p_el.findall(".//" + qn("w:bookmarkStart")):
+            name = bookmark.get(qn("w:name")) or ""
+            if name.startswith("_Toc"):
+                model.toc_bookmarks.append(name)
+        # (b) The TOC field itself: a real table of contents is a field whose
+        #     instruction contains "TOC". If we see it, the document has one.
+        for instr in p_el.findall(".//" + qn("w:instrText")):
+            if instr.text and "TOC" in instr.text:
+                model.toc_present = True
+        for fld in p_el.findall(".//" + qn("w:fldSimple")):
+            if "TOC" in (fld.get(qn("w:instr")) or ""):
+                model.toc_present = True
+
+        # Decide the block's type. Order matters: figure, then caption (real or
+        # typed), then heading, otherwise a plain paragraph.
+        block = Block(index=index, type="paragraph", text=text,
+                      style_name=style_name, numbered=numbered)
+
+        seq = _seq_label(p_el)
+
+        if _has_drawing(p_el):
+            block.type = "figure"
+        elif seq is not None:
+            # A real caption: it has a SEQ field. Record which kind.
+            block.type = "caption"
+            block.real = True
+            block.kind = CAPTION_SEQ_LABELS.get(seq.lower())
+        elif FAKED_CAPTION_RE.match(text or ""):
+            # Looks like a caption ("Table 1 ...") but has no SEQ field: typed.
+            block.type = "caption"
+            block.real = False
+            label = FAKED_CAPTION_RE.match(text).group(1).lower()
+            block.kind = CAPTION_SEQ_LABELS.get(label)
+        elif outline is not None and 0 <= outline <= 8:
+            block.type = "heading"
+            block.level = outline + 1
+
+        model.blocks.append(block)
+        index += 1
+
+    return model
+
+
+def main():
+    path = sys.argv[1] if len(sys.argv) > 1 else "Assignment_v8.docx"
+    print(f"Extracting: {path}\n")
+
+    model = extract(path)
+    print(f"Produced {len(model.blocks)} blocks.")
+    print(f"TOC present: {model.toc_present}   heading bookmarks: {len(model.toc_bookmarks)}\n")
+    for b in model.blocks:
+        lvl = f"L{b.level}" if b.level else "  "
+        num = "[num]" if b.numbered else "     "
+        extra = ""
+        if b.type == "caption":
+            extra = f"({b.kind}, {'real' if b.real else 'typed'})"
+        preview = b.text.strip()
+        if len(preview) > 45:
+            preview = preview[:45] + "..."
+        print(f"{b.index:3}  {b.type:10} {lvl:3} {num}  {preview} {extra}")
+
+
+if __name__ == "__main__":
+    main()
