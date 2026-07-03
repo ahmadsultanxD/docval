@@ -27,29 +27,9 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from config import DEFAULTS
 from model import DocModel
 
-
-# The sections a scientific document must contain. Each entry is the
-# canonical name (used in the issue message) and the set of heading texts
-# that satisfy it, so a German-language document passes the same check
-# ("Einleitung" satisfies "Introduction"). This is deliberately pure data:
-# in the cross-cutting phase it moves into the config file unchanged, and
-# adding or removing a requirement is editing this list, not code. The
-# German synonyms are unverified until a German-text sample exists.
-REQUIRED_SECTIONS = [
-    ("Introduction",          {"introduction", "einleitung"}),
-    ("State of Research",     {"state of research", "related work",
-                               "stand der forschung", "verwandte arbeiten"}),
-    ("Theoretical Framework", {"theoretical framework", "theoretischer rahmen",
-                               "theoretische grundlagen"}),
-    ("Methodology",           {"methodology", "methods", "methodik", "methoden"}),
-    ("Results",               {"results", "ergebnisse"}),
-    ("Discussion",            {"discussion", "diskussion"}),
-    ("Conclusion",            {"conclusion", "fazit", "schlussfolgerung"}),
-    ("References",            {"references", "bibliography",
-                               "literaturverzeichnis", "literatur"}),
-]
 
 # A typed section number at the start of a heading text ("1. Introduction",
 # "2.1 Methods"). Stripped before matching, so a document with typed heading
@@ -77,7 +57,7 @@ def _preview(block, limit=45):
 
 # --- Check 1: headings use real styles and nest without skipping levels ------
 
-def check_heading_hierarchy(model: DocModel) -> list:
+def check_heading_hierarchy(model: DocModel, config) -> list:
     """
     Two failure modes live here, and they need different handling.
 
@@ -121,7 +101,7 @@ def check_heading_hierarchy(model: DocModel) -> list:
 
 # --- Check 2: headings are automatically numbered, not typed -----------------
 
-def check_heading_numbering(model: DocModel) -> list:
+def check_heading_numbering(model: DocModel, config) -> list:
     """
     The extractor already did the hard part: 'numbered' is True only if the
     heading is really auto-numbered (resolved through the style chain). Here
@@ -150,7 +130,7 @@ def check_heading_numbering(model: DocModel) -> list:
 
 # --- Check 3: a real table of contents field is present ----------------------
 
-def check_toc_present(model: DocModel) -> list:
+def check_toc_present(model: DocModel, config) -> list:
     """
     The extractor set toc_present only if it saw a real TOC field, so a typed
     imitation of a table of contents (v1's list of "1Introduction1" lines)
@@ -167,7 +147,7 @@ def check_toc_present(model: DocModel) -> list:
 
 # --- Check 4: the table of contents is linked to the headings -----------------
 
-def check_toc_linked(model: DocModel) -> list:
+def check_toc_linked(model: DocModel, config) -> list:
     """
     A real table of contents does not merely list the headings, it links to
     them: each entry is a hyperlink whose anchor names a "_Toc" bookmark
@@ -208,7 +188,7 @@ def _normalize_heading(text):
     return _LEADING_NUMBER_RE.sub("", (text or "").strip().lower()).strip()
 
 
-def check_required_sections(model: DocModel) -> list:
+def check_required_sections(model: DocModel, config) -> list:
     """
     Only real headings can satisfy a requirement: a section that exists as
     bold text is exactly the fake structure this tool exists to catch. That
@@ -219,18 +199,19 @@ def check_required_sections(model: DocModel) -> list:
 
     Both sides of the comparison go through the same normalization, so the
     requirement list stays forgiving about case and stray spaces when it is
-    edited by hand (and later, in the config file).
+    edited in the config file.
     """
     present = {_normalize_heading(b.text)
                for b in model.blocks if b.type == "heading"}
     issues = []
-    for canonical, synonyms in REQUIRED_SECTIONS:
-        accepted = {_normalize_heading(s) for s in synonyms}
+    for section in config["required_sections"]:
+        accepted = {_normalize_heading(s) for s in section["accept"]}
         if present & accepted:
             continue
+        name = section["name"]
         issues.append(Issue(
             check="required-sections",
-            message=f"Required section '{canonical}' not found among "
+            message=f"Required section '{name}' not found among "
                     "the document's headings.",
         ))
     return issues
@@ -238,7 +219,7 @@ def check_required_sections(model: DocModel) -> list:
 
 # --- Check 6: lists use real list formatting, not typed markers --------------
 
-def check_list_formatting(model: DocModel) -> list:
+def check_list_formatting(model: DocModel, config) -> list:
     """
     The extractor marks a paragraph as a real list item when it carries real
     numbering without being a heading, and as a typed one when its text merely
@@ -274,7 +255,7 @@ def _caption_matches(block, kind):
     return block is not None and block.type == "caption" and block.kind == kind
 
 
-def check_table_captions(model: DocModel) -> list:
+def check_table_captions(model: DocModel, config) -> list:
     """
     Scientific convention places a table's caption ABOVE the table, and the
     samples follow it strictly: the caption is the block immediately before,
@@ -314,7 +295,7 @@ def check_table_captions(model: DocModel) -> list:
     return issues
 
 
-def check_figure_captions(model: DocModel) -> list:
+def check_figure_captions(model: DocModel, config) -> list:
     """
     The mirror image of the table check: a figure's caption belongs directly
     BELOW the figure. Inline figures (images pasted into a line of text) are
@@ -354,7 +335,7 @@ def check_figure_captions(model: DocModel) -> list:
 
 # --- Check 9: equations use the real equation format --------------------------
 
-def check_equation_format(model: DocModel) -> list:
+def check_equation_format(model: DocModel, config) -> list:
     """
     A real equation is an OMML math object: Word can renumber it, style it,
     and a screen reader can read it. A formula typed as ordinary text only
@@ -378,7 +359,7 @@ def check_equation_format(model: DocModel) -> list:
 
 # --- Check 10: no uncaptioned images pasted into the text ---------------------
 
-def check_inline_images(model: DocModel) -> list:
+def check_inline_images(model: DocModel, config) -> list:
     """
     An image sitting inside a line of text, with no caption anywhere next to
     it, is suspicious: that is how a screenshot of an equation or a symbol
@@ -406,27 +387,45 @@ def check_inline_images(model: DocModel) -> list:
 
 # --- the engine ---------------------------------------------------------------
 
-# The checks that are implemented so far, in the order they run and report.
-# Later, the config file decides which of these are active; for now, all.
+# Every check, paired with its stable id, in the order they run and report.
+# The id is what the config's "checks" table and the JSON output key on, so
+# it must never change once published, even if the function is renamed.
 CHECKS = [
-    check_heading_hierarchy,
-    check_heading_numbering,
-    check_toc_present,
-    check_toc_linked,
-    check_required_sections,
-    check_list_formatting,
-    check_table_captions,
-    check_figure_captions,
-    check_equation_format,
-    check_inline_images,
+    ("heading-hierarchy", check_heading_hierarchy),
+    ("heading-numbering", check_heading_numbering),
+    ("toc-present",       check_toc_present),
+    ("toc-linked",        check_toc_linked),
+    ("required-sections", check_required_sections),
+    ("list-formatting",   check_list_formatting),
+    ("table-caption",     check_table_captions),
+    ("figure-caption",    check_figure_captions),
+    ("equation-format",   check_equation_format),
+    ("inline-image",      check_inline_images),
 ]
 
 
-def run_checks(model: DocModel) -> list:
-    """Run every active check and return all issues in one list."""
+def enabled_checks(config=None) -> list:
+    """The ids of the checks the config leaves enabled, in run order."""
+    if config is None:
+        config = DEFAULTS
+    switches = config.get("checks", {})
+    return [check_id for check_id, _ in CHECKS if switches.get(check_id, True)]
+
+
+def run_checks(model: DocModel, config=None) -> list:
+    """
+    Run every enabled check and return all issues in one list.
+
+    Without a config the built-in defaults apply, so callers that do not
+    care about configuration can keep calling run_checks(model).
+    """
+    if config is None:
+        config = DEFAULTS
+    enabled = set(enabled_checks(config))
     issues = []
-    for check in CHECKS:
-        issues.extend(check(model))
+    for check_id, check in CHECKS:
+        if check_id in enabled:
+            issues.extend(check(model, config))
     return issues
 
 

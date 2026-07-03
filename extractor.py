@@ -32,6 +32,7 @@ import docx
 from docx.oxml.ns import qn
 from lxml import etree
 
+from config import DEFAULTS
 from model import Block, DocModel
 
 
@@ -41,35 +42,32 @@ from model import Block, DocModel
 M_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 
 
-# Caption SEQ labels (lowercased) -> what kind of caption it is.
-# Word stores a hidden "SEQ" field in real captions: "SEQ Table" or
-# "SEQ Figure". This is the reliable signal, and it can be localized, so we
-# map the German labels too. This belongs in config later.
-CAPTION_SEQ_LABELS = {
-    "table": "table", "tabelle": "table",
-    "figure": "figure", "abbildung": "figure",
-}
+def _compile_patterns(config):
+    """
+    Build the language-dependent lookups from the config: which words label
+    which caption kind, and what a typed list marker looks like.
 
-# A typed caption looks like "Table 1 ..." or "Figure 1 ..." (any language we
-# know). Used only to catch FAKE captions that have no real SEQ field.
-FAKED_CAPTION_RE = re.compile(r"^\s*(table|figure|tabelle|abbildung)\s+\d+", re.I)
+    Word stores a hidden "SEQ" field in real captions ("SEQ Table"), and the
+    label is localized, so the config lists the accepted words per kind. The
+    same words recognize typed captions ("Table 1 ..." with no field behind
+    it). For lists, the typed marker is a bullet character, a number like
+    "1." or "1)", a lowercase letter like "a)" (lowercase only, because a
+    capital with a period would match initials in a references list, "A.
+    Smith"), or one of the configured labels ("RQ1:") - in a real list that
+    label comes from the numbering definition in word/numbering.xml and
+    never appears in the text nodes; typed as ordinary text it marks a fake.
+    """
+    seq_labels = {}
+    for kind, labels in config["caption_labels"].items():
+        for label in labels:
+            seq_labels[label.lower()] = kind
+    faked_caption_re = re.compile(
+        r"^\s*(%s)\s+\d+" % "|".join(seq_labels), re.I)
+    typed_list_re = re.compile(
+        r"^\s*(?:[-•*·▪–]\s+|\d+[.)]\s+|[a-z][.)]\s+|(?:%s)\d+[.:)]?\s*)"
+        % "|".join(config["list_labels"]))
+    return seq_labels, faked_caption_re, typed_list_re
 
-# Labeled list sequences we expect in scientific documents ("RQ1:", "RQ2:").
-# In a real list the label comes from the numbering definition in
-# word/numbering.xml (lvlText "RQ %1:"), so it never appears in the text
-# nodes; typed as ordinary text it marks a fake. The list is explicit and
-# short on purpose: a generic letters-plus-digit pattern would misfire on
-# ordinary prose. Belongs in config later, next to the caption labels.
-LIST_LABELS = ("RQ",)
-
-# A typed list marker at the start of a paragraph: a bullet character, a
-# number like "1." or "1)", a lowercase letter like "a)", or one of the
-# labels above ("RQ1"). Lowercase letters only, because a capital with a
-# period would match initials in a references list ("A. Smith").
-TYPED_LIST_RE = re.compile(
-    r"^\s*(?:[-•*·▪–]\s+|\d+[.)]\s+|[a-z][.)]\s+|(?:%s)\d+[.:)]?\s*)"
-    % "|".join(LIST_LABELS)
-)
 
 # A typed equation: an "=" with a math operator somewhere around it, in text
 # that has no real math object behind it. Deliberately conservative - "=" on
@@ -210,8 +208,17 @@ def _seq_label(p_el):
 
 # --- the extractor -----------------------------------------------------------
 
-def extract(path):
-    """Open a .docx and return a DocModel of typed Blocks."""
+def extract(path, config=None):
+    """
+    Open a .docx and return a DocModel of typed Blocks.
+
+    The config supplies the language-dependent tables (caption labels, list
+    labels); without one, the built-in defaults apply.
+    """
+    if config is None:
+        config = DEFAULTS
+    seq_labels, faked_caption_re, typed_list_re = _compile_patterns(config)
+
     document = docx.Document(path)
 
     # Build a lookup from style id to the style object, so we can follow the
@@ -295,13 +302,13 @@ def extract(path):
             # A real caption: it has a SEQ field. Record which kind.
             block.type = "caption"
             block.real = True
-            block.kind = CAPTION_SEQ_LABELS.get(seq.lower())
-        elif FAKED_CAPTION_RE.match(text or ""):
+            block.kind = seq_labels.get(seq.lower())
+        elif faked_caption_re.match(text or ""):
             # Looks like a caption ("Table 1 ...") but has no SEQ field: typed.
             block.type = "caption"
             block.real = False
-            label = FAKED_CAPTION_RE.match(text).group(1).lower()
-            block.kind = CAPTION_SEQ_LABELS.get(label)
+            label = faked_caption_re.match(text).group(1).lower()
+            block.kind = seq_labels.get(label)
         elif outline is not None and 0 <= outline <= 8:
             block.type = "heading"
             block.level = outline + 1
@@ -314,7 +321,7 @@ def extract(path):
             # as list items their formatting is genuine, so real is True.
             block.type = "list_item"
             block.real = True
-        elif TYPED_LIST_RE.match(text or ""):
+        elif typed_list_re.match(text or ""):
             # Looks like a list item ("- ...", "1. ...", "RQ1: ...") but has
             # no real numbering behind it: the marker is typed text.
             block.type = "list_item"
