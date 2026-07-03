@@ -30,8 +30,15 @@ import re
 import sys
 import docx
 from docx.oxml.ns import qn
+from lxml import etree
 
 from model import Block, DocModel
+
+
+# Word stores real equations in their own namespace (OMML, Office Math Markup
+# Language), separate from the ordinary text namespace. qn() only knows the
+# common prefixes, so we spell this one out.
+M_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 
 
 # Caption SEQ labels (lowercased) -> what kind of caption it is.
@@ -46,6 +53,33 @@ CAPTION_SEQ_LABELS = {
 # A typed caption looks like "Table 1 ..." or "Figure 1 ..." (any language we
 # know). Used only to catch FAKE captions that have no real SEQ field.
 FAKED_CAPTION_RE = re.compile(r"^\s*(table|figure|tabelle|abbildung)\s+\d+", re.I)
+
+# Labeled list sequences we expect in scientific documents ("RQ1:", "RQ2:").
+# In a real list the label comes from the numbering definition in
+# word/numbering.xml (lvlText "RQ %1:"), so it never appears in the text
+# nodes; typed as ordinary text it marks a fake. The list is explicit and
+# short on purpose: a generic letters-plus-digit pattern would misfire on
+# ordinary prose. Belongs in config later, next to the caption labels.
+LIST_LABELS = ("RQ",)
+
+# A typed list marker at the start of a paragraph: a bullet character, a
+# number like "1." or "1)", a lowercase letter like "a)", or one of the
+# labels above ("RQ1"). Lowercase letters only, because a capital with a
+# period would match initials in a references list ("A. Smith").
+TYPED_LIST_RE = re.compile(
+    r"^\s*(?:[-•*·▪–]\s+|\d+[.)]\s+|[a-z][.)]\s+|(?:%s)\d+[.:)]?\s*)"
+    % "|".join(LIST_LABELS)
+)
+
+# A typed equation: an "=" with a math operator somewhere around it, in text
+# that has no real math object behind it. Deliberately conservative - "=" on
+# its own appears in ordinary prose ("p = 0.05"), so we also require one of
+# the distinctly mathematical symbols. The hyphen is left out of the operator
+# class on purpose: it is everywhere in prose. This heuristic is UNVERIFIED
+# against a labeled sample; the set contains no faked equation yet.
+TYPED_EQUATION_RE = re.compile(
+    r"=[^=]*[+*/·∙×^√∑∫≤≥≈]|[+*/·∙×^√∑∫≤≥≈][^=]*="
+)
 
 
 # --- small helpers for reading the XML ---------------------------------------
@@ -131,6 +165,29 @@ def _has_drawing(p_el):
     return p_el.find(".//" + qn("w:drawing")) is not None
 
 
+def _has_math(p_el):
+    """True if the paragraph contains a real equation (an OMML math object)."""
+    return p_el.find(".//" + M_NS + "oMath") is not None
+
+
+def _footnote_paragraphs(document):
+    """
+    Yield the paragraphs of every footnote in the document.
+
+    Footnotes do not live in the document body at all: they are a separate
+    XML part, word/footnotes.xml, that the body only points at. The samples
+    put their equations in footnotes, so skipping this part would mean never
+    seeing them. python-docx does not model footnotes, but it does give us
+    the raw part through the document's relationships, and its XML uses the
+    same w:p paragraphs we already know how to read.
+    """
+    for rel in document.part.rels.values():
+        if rel.reltype.endswith("/footnotes"):
+            root = etree.fromstring(rel.target_part.blob)
+            for p_el in root.iter(qn("w:p")):
+                yield p_el
+
+
 def _seq_label(p_el):
     """
     Return the SEQ label of a real caption ('Table' or 'Figure'), or None.
@@ -208,8 +265,19 @@ def extract(path):
 
         seq = _seq_label(p_el)
 
-        if _has_drawing(p_el):
+        if _has_math(p_el):
+            # A real equation, wherever it sits in the paragraph. This must
+            # come before the drawing test so that a paragraph mixing text
+            # and math is recognized as an equation, not prose.
+            block.type = "equation"
+            block.real = True
+        elif _has_drawing(p_el):
             block.type = "figure"
+            # An image inside a line of text, rather than standing in its own
+            # empty paragraph, is how a pasted equation or symbol usually
+            # arrives. We cannot see inside the pixels, so we only record the
+            # placement here and let a rule decide what to make of it.
+            block.inline = bool(text.strip())
         elif seq is not None:
             # A real caption: it has a SEQ field. Record which kind.
             block.type = "caption"
@@ -224,9 +292,45 @@ def extract(path):
         elif outline is not None and 0 <= outline <= 8:
             block.type = "heading"
             block.level = outline + 1
+        elif numbered:
+            # A real list item: the paragraph carries real numbering (its own
+            # or through its style) but no outline level, so it is not a
+            # heading. This must come AFTER the heading test: v1 taught us
+            # that a document can fake numbered headings by using a numbered
+            # list style, and those must not be mistaken for headings - but
+            # as list items their formatting is genuine, so real is True.
+            block.type = "list_item"
+            block.real = True
+        elif TYPED_LIST_RE.match(text or ""):
+            # Looks like a list item ("- ...", "1. ...", "RQ1: ...") but has
+            # no real numbering behind it: the marker is typed text.
+            block.type = "list_item"
+            block.real = False
+        elif TYPED_EQUATION_RE.search(text or ""):
+            # Looks like an equation but has no math object behind it: the
+            # formula was typed as ordinary text.
+            block.type = "equation"
+            block.real = False
 
         model.blocks.append(block)
         index += 1
+
+    # Finally, the footnotes. They are not part of the body's reading order,
+    # so we do not push their prose through the full classification - a
+    # footnote is not where headings, captions, or lists belong. The one
+    # structural thing that legitimately lives there is an equation, so that
+    # is the only thing we look for. Appending these blocks after the body
+    # keeps the body's order intact for the position-based caption checks.
+    for p_el in _footnote_paragraphs(document):
+        text = "".join(node.text or "" for node in p_el.iter(qn("w:t")))
+        if _has_math(p_el):
+            model.blocks.append(Block(index=index, type="equation",
+                                      text=text, real=True))
+            index += 1
+        elif TYPED_EQUATION_RE.search(text):
+            model.blocks.append(Block(index=index, type="equation",
+                                      text=text, real=False))
+            index += 1
 
     return model
 

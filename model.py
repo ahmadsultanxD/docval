@@ -31,7 +31,7 @@ class Block:
     """
 
     index: int                       # position in the document, 0, 1, 2, ...
-    type: str                        # heading | paragraph | list_item | table | figure | caption
+    type: str                        # heading | paragraph | list_item | table | figure | caption | equation
     text: str = ""                   # the visible text, empty for a table or an image
 
     style_name: Optional[str] = None  # the Word style name, e.g. "heading 1"
@@ -39,7 +39,9 @@ class Block:
     numbered: bool = False            # True if numbering is automatic (not typed)
 
     kind: Optional[str] = None        # for a caption: "table" or "figure"
-    real: Optional[bool] = None       # for a caption or list: real mechanism vs typed text
+    real: Optional[bool] = None       # for a caption, list, or equation: real mechanism vs typed text
+    inline: bool = False              # for a figure: pasted inside a line of text
+                                      # rather than standing in its own paragraph
 
 
 @dataclass
