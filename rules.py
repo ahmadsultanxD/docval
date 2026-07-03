@@ -17,16 +17,44 @@ is wrong, and where. Severity and weighting belong to a later grading policy,
 not here. The 'check' id is stable and machine-readable (the JSON reporter and
 the CodeOcean integration will key on it); the message is for humans.
 
-This file holds checks 1-3 and 6 of the plan so far, plus two checks beyond
-the original eight that the samples' equations motivated: real equation
-format, and no uncaptioned inline images. The remaining checks are added one
-at a time, each verified against the sample versions before the next.
+This file holds all eight checks of the plan, plus two beyond the original
+eight that the samples' equations motivated: real equation format, and no
+uncaptioned inline images. Each check was verified against the sample
+versions as it was added.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 from model import DocModel
+
+
+# The sections a scientific document must contain. Each entry is the
+# canonical name (used in the issue message) and the set of heading texts
+# that satisfy it, so a German-language document passes the same check
+# ("Einleitung" satisfies "Introduction"). This is deliberately pure data:
+# in the cross-cutting phase it moves into the config file unchanged, and
+# adding or removing a requirement is editing this list, not code. The
+# German synonyms are unverified until a German-text sample exists.
+REQUIRED_SECTIONS = [
+    ("Introduction",          {"introduction", "einleitung"}),
+    ("State of Research",     {"state of research", "related work",
+                               "stand der forschung", "verwandte arbeiten"}),
+    ("Theoretical Framework", {"theoretical framework", "theoretischer rahmen",
+                               "theoretische grundlagen"}),
+    ("Methodology",           {"methodology", "methods", "methodik", "methoden"}),
+    ("Results",               {"results", "ergebnisse"}),
+    ("Discussion",            {"discussion", "diskussion"}),
+    ("Conclusion",            {"conclusion", "fazit", "schlussfolgerung"}),
+    ("References",            {"references", "bibliography",
+                               "literaturverzeichnis", "literatur"}),
+]
+
+# A typed section number at the start of a heading text ("1. Introduction",
+# "2.1 Methods"). Stripped before matching, so a document with typed heading
+# numbers fails only the numbering check, not also the sections check.
+_LEADING_NUMBER_RE = re.compile(r"^\s*\d+(\.\d+)*[.):]?\s*")
 
 
 @dataclass
@@ -137,6 +165,77 @@ def check_toc_present(model: DocModel) -> list:
     )]
 
 
+# --- Check 4: the table of contents is linked to the headings -----------------
+
+def check_toc_linked(model: DocModel) -> list:
+    """
+    A real table of contents does not merely list the headings, it links to
+    them: each entry is a hyperlink whose anchor names a "_Toc" bookmark
+    sitting on the heading it points at. So the test is resolution - every
+    anchor the TOC uses must exist among the heading bookmarks. Anchors that
+    do not resolve mean the TOC is stale: headings changed after it was
+    generated, and it was never updated.
+
+    If the document has no TOC at all, this check stays silent; that is
+    check_toc_present's finding, and reporting it twice would be noise.
+    """
+    if not model.toc_present:
+        return []
+
+    if not model.toc_anchors:
+        return [Issue(
+            check="toc-linked",
+            message="The table of contents has no links to the headings; "
+                    "its entries do not point anywhere.",
+        )]
+
+    bookmarks = set(model.heading_bookmarks)
+    dangling = [a for a in model.toc_anchors if a not in bookmarks]
+    if dangling:
+        return [Issue(
+            check="toc-linked",
+            message=f"{len(dangling)} of {len(model.toc_anchors)} table-of-"
+                    "contents entries point at headings that no longer exist; "
+                    "the table of contents is out of date.",
+        )]
+    return []
+
+
+# --- Check 5: required sections are present -----------------------------------
+
+def _normalize_heading(text):
+    """Lowercase, trim, and drop a typed leading number, for name matching."""
+    return _LEADING_NUMBER_RE.sub("", (text or "").strip().lower()).strip()
+
+
+def check_required_sections(model: DocModel) -> list:
+    """
+    Only real headings can satisfy a requirement: a section that exists as
+    bold text is exactly the fake structure this tool exists to catch. That
+    means a document with no real headings fails every requirement, on top
+    of the hierarchy check's finding - deliberately so. Each missing section
+    is its own piece of information for grading, and nothing gets skipped
+    just because another check already fired.
+
+    Both sides of the comparison go through the same normalization, so the
+    requirement list stays forgiving about case and stray spaces when it is
+    edited by hand (and later, in the config file).
+    """
+    present = {_normalize_heading(b.text)
+               for b in model.blocks if b.type == "heading"}
+    issues = []
+    for canonical, synonyms in REQUIRED_SECTIONS:
+        accepted = {_normalize_heading(s) for s in synonyms}
+        if present & accepted:
+            continue
+        issues.append(Issue(
+            check="required-sections",
+            message=f"Required section '{canonical}' not found among "
+                    "the document's headings.",
+        ))
+    return issues
+
+
 # --- Check 6: lists use real list formatting, not typed markers --------------
 
 def check_list_formatting(model: DocModel) -> list:
@@ -165,6 +264,91 @@ def check_list_formatting(model: DocModel) -> list:
             block_index=b.index,
             text=_preview(b),
         ))
+    return issues
+
+
+# --- Checks 7 and 8: every table and figure has a real caption, correctly placed
+
+def _caption_matches(block, kind):
+    """True if this block is a caption of the given kind, real or typed."""
+    return block is not None and block.type == "caption" and block.kind == kind
+
+
+def check_table_captions(model: DocModel) -> list:
+    """
+    Scientific convention places a table's caption ABOVE the table, and the
+    samples follow it strictly: the caption is the block immediately before,
+    with nothing in between. So the test is plain adjacency. Three ways to
+    fail, told apart so the message can say what actually happened: a typed
+    caption in the right place, a caption on the wrong side, or no caption
+    at all.
+    """
+    issues = []
+    for i, b in enumerate(model.blocks):
+        if b.type != "table":
+            continue
+        above = model.blocks[i - 1] if i > 0 else None
+        below = model.blocks[i + 1] if i + 1 < len(model.blocks) else None
+
+        if _caption_matches(above, "table"):
+            if not above.real:
+                issues.append(Issue(
+                    check="table-caption",
+                    message="The caption above this table is typed text, "
+                            "not a real caption with automatic numbering.",
+                    block_index=b.index, text=_preview(above),
+                ))
+        elif _caption_matches(below, "table"):
+            issues.append(Issue(
+                check="table-caption",
+                message="This table's caption sits below the table; "
+                        "a table caption belongs directly above it.",
+                block_index=b.index, text=_preview(below),
+            ))
+        else:
+            issues.append(Issue(
+                check="table-caption",
+                message="This table has no caption directly above it.",
+                block_index=b.index,
+            ))
+    return issues
+
+
+def check_figure_captions(model: DocModel) -> list:
+    """
+    The mirror image of the table check: a figure's caption belongs directly
+    BELOW the figure. Inline figures (images pasted into a line of text) are
+    left out here, because check_inline_images already owns them and flagging
+    the same image twice would be noise.
+    """
+    issues = []
+    for i, b in enumerate(model.blocks):
+        if b.type != "figure" or b.inline:
+            continue
+        above = model.blocks[i - 1] if i > 0 else None
+        below = model.blocks[i + 1] if i + 1 < len(model.blocks) else None
+
+        if _caption_matches(below, "figure"):
+            if not below.real:
+                issues.append(Issue(
+                    check="figure-caption",
+                    message="The caption below this figure is typed text, "
+                            "not a real caption with automatic numbering.",
+                    block_index=b.index, text=_preview(below),
+                ))
+        elif _caption_matches(above, "figure"):
+            issues.append(Issue(
+                check="figure-caption",
+                message="This figure's caption sits above the figure; "
+                        "a figure caption belongs directly below it.",
+                block_index=b.index, text=_preview(above),
+            ))
+        else:
+            issues.append(Issue(
+                check="figure-caption",
+                message="This figure has no caption directly below it.",
+                block_index=b.index,
+            ))
     return issues
 
 
@@ -228,7 +412,11 @@ CHECKS = [
     check_heading_hierarchy,
     check_heading_numbering,
     check_toc_present,
+    check_toc_linked,
+    check_required_sections,
     check_list_formatting,
+    check_table_captions,
+    check_figure_captions,
     check_equation_format,
     check_inline_images,
 ]
@@ -248,7 +436,7 @@ def _demo():
     import sys
     from extractor import extract
 
-    path = sys.argv[1] if len(sys.argv) > 1 else "Assignment_v8.docx"
+    path = sys.argv[1] if len(sys.argv) > 1 else "Sample Documents/Word/Assignment_v8.docx"
     print(f"Checking: {path}\n")
 
     model = extract(path)

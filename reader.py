@@ -49,7 +49,7 @@ def walk_body(document):
 
 def main():
     # Take the file path from the command line, or fall back to a default.
-    path = sys.argv[1] if len(sys.argv) > 1 else "Assignment_v8.docx"
+    path = sys.argv[1] if len(sys.argv) > 1 else "Sample Documents/Word/Assignment_v8.docx"
     print(f"Reading: {path}\n")
 
     document = read_document(path)

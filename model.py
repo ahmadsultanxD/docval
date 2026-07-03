@@ -53,7 +53,10 @@ class DocModel:
 
     blocks: list = field(default_factory=list)   # the elements, in order
     toc_present: bool = False                     # is there a real table-of-contents field?
-    toc_bookmarks: list = field(default_factory=list)  # names of heading bookmarks the TOC can link to
+    heading_bookmarks: list = field(default_factory=list)  # names of "_Toc" bookmarks
+                                                  # that sit ON heading paragraphs
+    toc_anchors: list = field(default_factory=list)  # bookmark names the table of
+                                                  # contents' hyperlink entries point AT
 
 
 # A small demonstration so you can see the shapes in use and run this file

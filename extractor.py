@@ -242,14 +242,27 @@ def extract(path):
         outline = _resolve_outline(p_el, style_obj)
         numbered = _resolve_numbering(p_el, style_obj)
 
-        # While we are on this paragraph, collect two document-wide facts.
-        # (a) Heading bookmarks: real headings carry a "_Toc" bookmark that the
-        #     table of contents links to. We note their names.
-        for bookmark in p_el.findall(".//" + qn("w:bookmarkStart")):
-            name = bookmark.get(qn("w:name")) or ""
-            if name.startswith("_Toc"):
-                model.toc_bookmarks.append(name)
-        # (b) The TOC field itself: a real table of contents is a field whose
+        # While we are on this paragraph, collect three document-wide facts.
+        # (a) Heading bookmarks: a heading listed in the table of contents
+        #     carries a "_Toc" bookmark that the TOC's entry links to. We only
+        #     collect them from real headings: cross-references create their
+        #     own bookmarks (named "_Ref", sitting on captions in the samples),
+        #     and collecting from every paragraph would count those too - the
+        #     miscount the plan warned about.
+        if outline is not None and 0 <= outline <= 8:
+            for bookmark in p_el.findall(".//" + qn("w:bookmarkStart")):
+                name = bookmark.get(qn("w:name")) or ""
+                if name.startswith("_Toc"):
+                    model.heading_bookmarks.append(name)
+        # (b) TOC anchors: each entry of a real table of contents is a
+        #     hyperlink whose anchor names the heading bookmark it jumps to.
+        #     Collecting these is what lets a rule verify the TOC is really
+        #     LINKED to the headings, not merely present.
+        for hyperlink in p_el.findall(".//" + qn("w:hyperlink")):
+            anchor = hyperlink.get(qn("w:anchor")) or ""
+            if anchor.startswith("_Toc"):
+                model.toc_anchors.append(anchor)
+        # (c) The TOC field itself: a real table of contents is a field whose
         #     instruction contains "TOC". If we see it, the document has one.
         for instr in p_el.findall(".//" + qn("w:instrText")):
             if instr.text and "TOC" in instr.text:
@@ -336,12 +349,13 @@ def extract(path):
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else "Assignment_v8.docx"
+    path = sys.argv[1] if len(sys.argv) > 1 else "Sample Documents/Word/Assignment_v8.docx"
     print(f"Extracting: {path}\n")
 
     model = extract(path)
     print(f"Produced {len(model.blocks)} blocks.")
-    print(f"TOC present: {model.toc_present}   heading bookmarks: {len(model.toc_bookmarks)}\n")
+    print(f"TOC present: {model.toc_present}   heading bookmarks: "
+          f"{len(model.heading_bookmarks)}   TOC anchors: {len(model.toc_anchors)}\n")
     for b in model.blocks:
         lvl = f"L{b.level}" if b.level else "  "
         num = "[num]" if b.numbered else "     "
