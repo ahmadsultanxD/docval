@@ -18,12 +18,15 @@ look like structure.
 
 ```
 python docval.py path/to/document.docx
+python docval.py path/to/document.tex
 python docval.py path/to/document.docx --json
 python docval.py path/to/document.docx --config course.json
 ```
 
-Exit code 0 means the document passed every enabled check; 1 means issues
-were found. `--json` prints the machine-readable form.
+The format is chosen by the file extension; Word (.docx) and LaTeX (.tex)
+are supported, OpenOffice (.odt) is planned. Exit code 0 means the document
+passed every enabled check; 1 means issues were found; 2 means the file
+could not be checked. `--json` prints the machine-readable form.
 
 `--config` points at a JSON file that overrides the built-in policy: which
 sections are required (with per-language synonyms), which caption and list
@@ -33,9 +36,13 @@ it wants to change.
 
 ## Architecture
 
-- **extractor.py** - reads a .docx and produces the shared representation:
-  an ordered list of typed blocks (`model.py`) plus document-wide facts.
-  One extractor per format; OpenOffice and LaTeX extractors are planned.
+- **word_extractor.py / latex_extractor.py** - one extractor per format,
+  each producing the same shared representation: an ordered list of typed
+  blocks (`model.py`) plus document-wide facts. An OpenOffice extractor
+  is planned.
+- **patterns.py** - recognizes structure that was typed rather than built
+  ("Table 1:" captions, "RQ1:" lists, keyboard formulas); faked structure
+  looks the same in every format, so these are shared by all extractors.
 - **rules.py** - the checks, written once against the representation,
   shared by every format.
 - **reporter.py** - the readable and the JSON output forms.

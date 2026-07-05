@@ -433,7 +433,7 @@ def run_checks(model: DocModel, config=None) -> list:
 # file can be tried on its own before the real reporter exists.
 def _demo():
     import sys
-    from extractor import extract
+    from word_extractor import extract
 
     path = sys.argv[1] if len(sys.argv) > 1 else "Sample Documents/Word/Assignment_v8.docx"
     print(f"Checking: {path}\n")

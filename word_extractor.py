@@ -1,5 +1,5 @@
 """
-extractor.py - Step 3 (complete): turn a real document into filled-in Blocks.
+word_extractor.py - Step 3 (complete): turn a real .docx into filled-in Blocks.
 
 This is where the reader and the model meet. The reader walked the body but saw
 only flat text. The model can hold real identity but was filled by hand. Here we
@@ -34,50 +34,13 @@ from lxml import etree
 
 from config import DEFAULTS
 from model import Block, DocModel
+from patterns import TYPED_EQUATION_RE, compile_patterns
 
 
 # Word stores real equations in their own namespace (OMML, Office Math Markup
 # Language), separate from the ordinary text namespace. qn() only knows the
 # common prefixes, so we spell this one out.
 M_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
-
-
-def _compile_patterns(config):
-    """
-    Build the language-dependent lookups from the config: which words label
-    which caption kind, and what a typed list marker looks like.
-
-    Word stores a hidden "SEQ" field in real captions ("SEQ Table"), and the
-    label is localized, so the config lists the accepted words per kind. The
-    same words recognize typed captions ("Table 1 ..." with no field behind
-    it). For lists, the typed marker is a bullet character, a number like
-    "1." or "1)", a lowercase letter like "a)" (lowercase only, because a
-    capital with a period would match initials in a references list, "A.
-    Smith"), or one of the configured labels ("RQ1:") - in a real list that
-    label comes from the numbering definition in word/numbering.xml and
-    never appears in the text nodes; typed as ordinary text it marks a fake.
-    """
-    seq_labels = {}
-    for kind, labels in config["caption_labels"].items():
-        for label in labels:
-            seq_labels[label.lower()] = kind
-    faked_caption_re = re.compile(
-        r"^\s*(%s)\s+\d+" % "|".join(seq_labels), re.I)
-    typed_list_re = re.compile(
-        r"^\s*(?:[-•*·▪–]\s+|\d+[.)]\s+|[a-z][.)]\s+|(?:%s)\d+[.:)]?\s*)"
-        % "|".join(config["list_labels"]))
-    return seq_labels, faked_caption_re, typed_list_re
-
-
-# A typed equation: an "=" with a math operator somewhere around it, in text
-# that has no real math object behind it. Deliberately conservative - "=" on
-# its own appears in ordinary prose ("p = 0.05"), so we also require one of
-# the distinctly mathematical symbols. The hyphen is left out of the operator
-# class on purpose: it is everywhere in prose. This heuristic is UNVERIFIED
-# against a labeled sample; the set contains no faked equation yet.
-TYPED_EQUATION_RE = re.compile(
-    r"=[^=]*[+*/·∙×^√∑∫≤≥≈]|[+*/·∙×^√∑∫≤≥≈][^=]*="
-)
 
 
 # --- small helpers for reading the XML ---------------------------------------
@@ -217,7 +180,7 @@ def extract(path, config=None):
     """
     if config is None:
         config = DEFAULTS
-    seq_labels, faked_caption_re, typed_list_re = _compile_patterns(config)
+    seq_labels, faked_caption_re, typed_list_re = compile_patterns(config)
 
     document = docx.Document(path)
 

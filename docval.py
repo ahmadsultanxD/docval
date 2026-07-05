@@ -11,16 +11,26 @@ report what they found. Usage:
 
 The exit code is part of the interface, because automation (and eventually
 CodeOcean) reads it before reading any output: 0 means the document passed
-every enabled check, 1 means issues were found.
+every enabled check, 1 means issues were found, 2 means the file could not
+be checked at all (unsupported format).
 """
 
 import argparse
+import os
 import sys
 
 import config as configuration
-from extractor import extract
+import latex_extractor
+import word_extractor
 from reporter import report_json, report_text
 from rules import enabled_checks, run_checks
+
+# One extractor per format, chosen by the file extension. This table is the
+# whole cost of supporting a new format at the entry point.
+EXTRACTORS = {
+    ".docx": word_extractor.extract,
+    ".tex": latex_extractor.extract,
+}
 
 
 def main(argv=None):
@@ -28,7 +38,7 @@ def main(argv=None):
         prog="docval",
         description="Check the structural quality of a scientific document.")
     parser.add_argument("file",
-                        help="the document to check (.docx)")
+                        help="the document to check (.docx or .tex)")
     parser.add_argument("--json", action="store_true",
                         help="print the machine-readable JSON form")
     parser.add_argument("--config",
@@ -41,6 +51,14 @@ def main(argv=None):
     # special character should degrade, not crash the run.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
+
+    extension = os.path.splitext(args.file)[1].lower()
+    extract = EXTRACTORS.get(extension)
+    if extract is None:
+        supported = ", ".join(sorted(EXTRACTORS))
+        print(f"docval: unsupported file type {extension!r}; "
+              f"supported: {supported}", file=sys.stderr)
+        return 2
 
     active_config = configuration.load(args.config)
     model = extract(args.file, active_config)
