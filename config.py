@@ -1,33 +1,40 @@
 """
-config.py - Step 5: everything that varies, in one place.
+config.py - loading the Structure and Styles property files.
 
-The checks' logic lives in code, but the POLICY they apply - which sections a
-course requires, which caption labels and list labels each language uses,
-which checks are active - belongs to the instructor, not the developer. In
-production the code is packaged away (eventually inside CodeOcean) and cannot
-be edited per course; this data can. So it lives here as plain data, and a
-course can override any of it with a JSON file of the same shape, without
-touching a line of code.
+The engine is generic: nothing in the code knows what one course requires
+or how one kind of document should look. Everything specific lives in two
+JSON property files that an instructor edits without touching code:
 
-DEFAULTS is the complete built-in configuration: the tool runs with zero
-setup, and a config file only overrides the keys it names. Overriding is
-per top-level key and the file's value replaces the default entirely - no
-deep merging - so what you write in the file is exactly what applies.
+  Structure - WHAT the document must contain: the required sections, in
+              the order they are expected to appear. If the sections list
+              is empty, no section requirements apply at all - the document
+              may contain any sections, as long as they are properly
+              structured (the Styles rules always apply).
+
+  Styles    - HOW the document must be formatted: the heading hierarchy
+              rules, where captions belong, which words label captions in
+              which language, which custom list labels exist (like "RQ"
+              for research questions), and which checks are active.
+
+Both files are optional. The defaults below are complete, so the tool runs
+with zero setup; a property file only overrides what it names. Inside a
+group ("headings", "captions", ...) the file also only needs the keys it
+changes - the rest keep their defaults. Keys starting with "_" are treated
+as comments and ignored, so files can document themselves.
 """
 
 import copy
 import json
 
 
-DEFAULTS = {
-    # The sections a scientific document must contain. Each entry has the
-    # canonical name (used in the issue message) and the heading texts that
+DEFAULT_STRUCTURE = {
+    # The required sections, in expected order. Each entry has the
+    # canonical name (used in issue messages) and the heading texts that
     # satisfy it, so a German-language document passes the same requirement
-    # ("Einleitung" satisfies "Introduction"). Matching normalizes case,
-    # spacing, and typed numbers on both sides, so these entries stay
-    # forgiving about how they are written. The German synonyms are
-    # unverified until a German-text sample exists.
-    "required_sections": [
+    # ("Einleitung" satisfies "Introduction"). Matching forgives case,
+    # spacing, and typed numbers on both sides. An empty list switches all
+    # section checking off.
+    "sections": [
         {"name": "Introduction",          "accept": ["introduction", "einleitung"]},
         {"name": "State of Research",     "accept": ["state of research", "related work",
                                                      "stand der forschung", "verwandte arbeiten"]},
@@ -40,22 +47,39 @@ DEFAULTS = {
         {"name": "References",            "accept": ["references", "bibliography",
                                                      "literaturverzeichnis", "literatur"]},
     ],
+}
 
-    # Caption labels per caption kind. A real Word caption carries a hidden
-    # SEQ field whose label names the sequence ("SEQ Table"), and the label
-    # is localized - so each kind lists the labels of every language we
-    # accept. The same words also recognize TYPED captions ("Table 1 ...").
-    "caption_labels": {
-        "table":  ["table", "tabelle"],
-        "figure": ["figure", "abbildung"],
+
+DEFAULT_STYLES = {
+    # How the heading hierarchy must be built: the level the document
+    # starts at, and how much deeper one heading may go than the heading
+    # before it (1 means a level may never be skipped: level 1 to level 2
+    # is fine, level 1 to level 3 is an issue).
+    "headings": {
+        "first_level": 1,
+        "max_deeper_step": 1,
     },
 
-    # Labeled list sequences we expect in scientific documents ("RQ1:").
-    # In a real list the label comes from the numbering definition and never
-    # appears in the text; typed as ordinary text it marks a fake. The list
-    # is explicit and short on purpose: a generic letters-plus-digit pattern
-    # would misfire on ordinary prose.
-    "list_labels": ["RQ"],
+    # Where captions belong relative to their table or figure ("above" or
+    # "below"), and which words label a caption of each kind. The labels
+    # are localized, so each kind lists every accepted language's word;
+    # the same words also recognize TYPED captions ("Table 1 ...").
+    "captions": {
+        "table_position": "above",
+        "figure_position": "below",
+        "labels": {
+            "table":  ["table", "tabelle"],
+            "figure": ["figure", "abbildung"],
+        },
+    },
+
+    # Custom labeled list sequences expected in the documents ("RQ1:" for
+    # research questions). In a real list the label comes from the format's
+    # numbering machinery and never appears in the text; typed as ordinary
+    # text it marks a fake.
+    "lists": {
+        "labels": ["RQ"],
+    },
 
     # Per-check switches, keyed by the check's stable id. A check missing
     # from this table is enabled; set an id to false to switch it off for
@@ -64,21 +88,45 @@ DEFAULTS = {
 }
 
 
-def load(path=None):
+def load_structure(path=None):
+    """The active Structure: the defaults, overridden by the given file."""
+    return _load(DEFAULT_STRUCTURE, path)
+
+
+def load_styles(path=None):
+    """The active Styles: the defaults, overridden by the given file."""
+    return _load(DEFAULT_STYLES, path)
+
+
+def _load(defaults, path):
     """
-    Return the active configuration: the defaults, with any keys from the
-    given JSON file replacing them. A key the defaults do not know is an
-    error rather than a silent no-op, so a typo in a config file ("cheks")
-    fails loudly instead of quietly disabling nothing.
+    Start from the defaults and apply the overrides from a JSON file.
+
+    A key the defaults do not know is an error rather than a silent no-op,
+    so a typo in a property file ("cheks") fails loudly instead of quietly
+    disabling nothing. Keys starting with "_" are comments and skipped.
+    When a default value is a group (a dictionary), the file's group is
+    merged into it key by key, so the file only needs the entries it
+    actually changes.
     """
-    config = copy.deepcopy(DEFAULTS)
-    if path is not None:
-        with open(path, encoding="utf-8") as f:
-            overrides = json.load(f)
-        for key, value in overrides.items():
-            if key not in DEFAULTS:
-                raise KeyError(
-                    f"Unknown configuration key {key!r}; "
-                    f"expected one of: {', '.join(sorted(DEFAULTS))}")
+    config = copy.deepcopy(defaults)
+    if path is None:
+        return config
+
+    with open(path, encoding="utf-8") as f:
+        overrides = json.load(f)
+
+    for key, value in overrides.items():
+        if key.startswith("_"):
+            continue
+        if key not in defaults:
+            raise KeyError(
+                f"Unknown property {key!r}; "
+                f"expected one of: {', '.join(sorted(defaults))}")
+        if isinstance(config[key], dict) and isinstance(value, dict):
+            for inner_key, inner_value in value.items():
+                if not inner_key.startswith("_"):
+                    config[key][inner_key] = inner_value
+        else:
             config[key] = value
     return config

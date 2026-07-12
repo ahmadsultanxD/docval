@@ -37,7 +37,8 @@ import re
 import sys
 from TexSoup import TexSoup
 
-from config import DEFAULTS
+from config import DEFAULT_STYLES
+from extractors import DocumentExtractor, register
 from model import Block, DocModel
 from patterns import TYPED_EQUATION_RE, compile_patterns
 
@@ -101,16 +102,16 @@ def _arg_text(node):
     return "".join(parts)
 
 
-def extract(path, config=None):
+def extract(path, styles=None):
     """
     Read a .tex source file and return a DocModel of typed Blocks.
 
-    The config supplies the same language tables as for Word; without one,
+    The styles supply the same language tables as for Word; without them,
     the built-in defaults apply.
     """
-    if config is None:
-        config = DEFAULTS
-    seq_labels, faked_caption_re, typed_list_re = compile_patterns(config)
+    if styles is None:
+        styles = DEFAULT_STYLES
+    seq_labels, faked_caption_re, typed_list_re = compile_patterns(styles)
 
     with open(path, encoding="utf-8") as f:
         source = f.read()
@@ -291,6 +292,19 @@ def extract(path, config=None):
                 model.toc_anchors.append(name)
 
     return model
+
+
+class LatexExtractor(DocumentExtractor):
+    """The LaTeX format's plug into the extractor registry."""
+
+    extensions = (".tex",)
+
+    def extract(self, path, styles=None):
+        return extract(path, styles)
+
+
+# Importing this module is what makes the format available.
+register(LatexExtractor())
 
 
 def main():

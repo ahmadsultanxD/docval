@@ -1,0 +1,14 @@
+{
+  "_comment": "Structure: WHAT the document must contain. The sections are checked in this order - a section found before one listed earlier is an issue. Set sections to [] to skip all section checking; the Styles rules still apply in full.",
+
+  "sections": [
+    {"name": "Introduction",          "accept": ["introduction", "einleitung"]},
+    {"name": "State of Research",     "accept": ["state of research", "related work", "stand der forschung"]},
+    {"name": "Theoretical Framework", "accept": ["theoretical framework", "theoretischer rahmen"]},
+    {"name": "Methodology",           "accept": ["methodology", "methods", "methodik"]},
+    {"name": "Results",               "accept": ["results", "ergebnisse"]},
+    {"name": "Discussion",            "accept": ["discussion", "diskussion"]},
+    {"name": "Conclusion",            "accept": ["conclusion", "fazit"]},
+    {"name": "References",            "accept": ["references", "bibliography", "literaturverzeichnis"]}
+  ]
+}

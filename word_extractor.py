@@ -32,7 +32,8 @@ import docx
 from docx.oxml.ns import qn
 from lxml import etree
 
-from config import DEFAULTS
+from config import DEFAULT_STYLES
+from extractors import DocumentExtractor, register
 from model import Block, DocModel
 from patterns import TYPED_EQUATION_RE, compile_patterns
 
@@ -171,16 +172,16 @@ def _seq_label(p_el):
 
 # --- the extractor -----------------------------------------------------------
 
-def extract(path, config=None):
+def extract(path, styles=None):
     """
     Open a .docx and return a DocModel of typed Blocks.
 
-    The config supplies the language-dependent tables (caption labels, list
-    labels); without one, the built-in defaults apply.
+    The styles supply the language-dependent tables (caption labels, list
+    labels); without them, the built-in defaults apply.
     """
-    if config is None:
-        config = DEFAULTS
-    seq_labels, faked_caption_re, typed_list_re = compile_patterns(config)
+    if styles is None:
+        styles = DEFAULT_STYLES
+    seq_labels, faked_caption_re, typed_list_re = compile_patterns(styles)
 
     document = docx.Document(path)
 
@@ -316,6 +317,19 @@ def extract(path, config=None):
             index += 1
 
     return model
+
+
+class WordExtractor(DocumentExtractor):
+    """The Word format's plug into the extractor registry."""
+
+    extensions = (".docx",)
+
+    def extract(self, path, styles=None):
+        return extract(path, styles)
+
+
+# Importing this module is what makes the format available.
+register(WordExtractor())
 
 
 def main():

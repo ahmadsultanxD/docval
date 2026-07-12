@@ -7,7 +7,7 @@ report what they found. Usage:
 
     python docval.py path/to/document.docx
     python docval.py path/to/document.docx --json
-    python docval.py path/to/document.docx --config course.json
+    python docval.py path/to/document.docx --structure structure.json --styles styles.json
 
 The exit code is part of the interface, because automation (and eventually
 CodeOcean) reads it before reading any output: 0 means the document passed
@@ -16,21 +16,18 @@ be checked at all (unsupported format).
 """
 
 import argparse
-import os
 import sys
 
 import config as configuration
-import latex_extractor
-import word_extractor
+import extractors
 from reporter import report_json, report_text
 from rules import enabled_checks, run_checks
 
-# One extractor per format, chosen by the file extension. This table is the
-# whole cost of supporting a new format at the entry point.
-EXTRACTORS = {
-    ".docx": word_extractor.extract,
-    ".tex": latex_extractor.extract,
-}
+# Importing a format's module is what registers it with the extractor
+# registry. Supporting a new format means writing its module and adding
+# one import line here - nothing else in the engine changes.
+import word_extractor   # noqa: F401  (registers .docx)
+import latex_extractor  # noqa: F401  (registers .tex)
 
 
 def main(argv=None):
@@ -41,9 +38,14 @@ def main(argv=None):
                         help="the document to check (.docx or .tex)")
     parser.add_argument("--json", action="store_true",
                         help="print the machine-readable JSON form")
-    parser.add_argument("--config",
-                        help="path to a JSON file overriding the built-in "
-                             "configuration (required sections, labels, "
+    parser.add_argument("--structure",
+                        help="path to a Structure property file: WHAT the "
+                             "document must contain (the sections, in "
+                             "expected order; an empty list checks none)")
+    parser.add_argument("--styles",
+                        help="path to a Styles property file: HOW the "
+                             "document must be formatted (heading rules, "
+                             "caption positions and labels, list labels, "
                              "active checks)")
     args = parser.parse_args(argv)
 
@@ -52,20 +54,21 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
 
-    extension = os.path.splitext(args.file)[1].lower()
-    extract = EXTRACTORS.get(extension)
-    if extract is None:
-        supported = ", ".join(sorted(EXTRACTORS))
-        print(f"docval: unsupported file type {extension!r}; "
+    extractor = extractors.extractor_for(args.file)
+    if extractor is None:
+        supported = ", ".join(extractors.supported_extensions())
+        print(f"docval: unsupported file type for {args.file!r}; "
               f"supported: {supported}", file=sys.stderr)
         return 2
 
-    active_config = configuration.load(args.config)
-    model = extract(args.file, active_config)
-    issues = run_checks(model, active_config)
+    structure = configuration.load_structure(args.structure)
+    styles = configuration.load_styles(args.styles)
+
+    model = extractor.extract(args.file, styles)
+    issues = run_checks(model, structure, styles)
 
     if args.json:
-        print(report_json(args.file, issues, enabled_checks(active_config)))
+        print(report_json(args.file, issues, enabled_checks(styles)))
     else:
         print(report_text(args.file, issues))
 

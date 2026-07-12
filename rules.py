@@ -5,21 +5,25 @@ The extractor turned the document into Blocks. Now we can finally ask the
 questions this project exists for: are the headings real and properly nested,
 are they auto-numbered, is there a table of contents, and so on.
 
-Each check is one plain function. It takes the DocModel, looks at the blocks
-or the document-wide facts, and returns a list of Issues - empty if the
-document passes. The checks do not know about Word, OpenOffice, or LaTeX;
-they only read the representation. That is the whole point of the design:
-when the .odt and .tex extractors exist, these functions run on their output
-unchanged.
+Each check is one plain function. It takes three things and returns a list
+of Issues - empty if the document passes:
+
+    model      the document, as the Blocks an extractor produced
+    structure  the Structure properties: WHAT the document must contain
+    styles     the Styles properties: HOW it must be formatted
+
+The checks do not know about Word, OpenOffice, or LaTeX; they only read the
+representation. That is the whole point of the design: every format's
+extractor output runs through these functions unchanged.
 
 An Issue is deliberately minimal: which check fired, one sentence saying what
 is wrong, and where. Severity and weighting belong to a later grading policy,
 not here. The 'check' id is stable and machine-readable (the JSON reporter and
 the CodeOcean integration will key on it); the message is for humans.
 
-This file holds all eight checks of the plan, plus two beyond the original
-eight that the samples' equations motivated: real equation format, and no
-uncaptioned inline images. Each check was verified against the sample
+This file holds all eight checks of the plan, the section-order check, and
+two more that the samples' equations motivated: real equation format, and
+no uncaptioned inline images. Each check was verified against the sample
 versions as it was added.
 """
 
@@ -27,7 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from config import DEFAULTS
+from config import DEFAULT_STRUCTURE, DEFAULT_STYLES
 from model import DocModel
 
 
@@ -57,7 +61,7 @@ def _preview(block, limit=45):
 
 # --- Check 1: headings use real styles and nest without skipping levels ------
 
-def check_heading_hierarchy(model: DocModel, config) -> list:
+def check_heading_hierarchy(model: DocModel, structure, styles) -> list:
     """
     Two failure modes live here, and they need different handling.
 
@@ -67,11 +71,14 @@ def check_heading_hierarchy(model: DocModel, config) -> list:
     would find nothing wrong and wrongly pass. So an empty heading list is
     itself the finding.
 
-    Second: skipped levels. A heading may go at most one level deeper than the
-    heading before it (level 1 to level 2 is fine, level 1 to level 3 skips
-    level 2). Going back UP by any amount is fine - closing a subsection and
-    starting a new chapter is normal. The first heading of the document must
-    be level 1, which is the same rule if you imagine level 0 before the text.
+    Second: skipped levels. How deep a heading may go is policy, so it comes
+    from the Styles properties: the document starts at "first_level", and a
+    heading may go at most "max_deeper_step" levels deeper than the heading
+    before it (with the default step of 1: level 1 to level 2 is fine, level
+    1 to level 3 skips level 2). Going back UP by any amount is fine -
+    closing a subsection and starting a new chapter is normal. The first
+    heading must be at first_level, which is the same rule if you imagine
+    the level before the text.
     """
     issues = []
     headings = [b for b in model.blocks if b.type == "heading"]
@@ -84,13 +91,17 @@ def check_heading_hierarchy(model: DocModel, config) -> list:
         ))
         return issues
 
-    previous_level = 0  # imaginary level before the first heading
+    first_level = styles["headings"]["first_level"]
+    max_step = styles["headings"]["max_deeper_step"]
+
+    previous_level = first_level - 1  # imaginary level before the first heading
     for h in headings:
-        if h.level > previous_level + 1:
+        if h.level > previous_level + max_step:
             issues.append(Issue(
                 check="heading-hierarchy",
                 message=f"Heading level {h.level} follows level "
-                        f"{previous_level}, skipping level {previous_level + 1}.",
+                        f"{previous_level}, deeper than the allowed step "
+                        f"of {max_step}.",
                 block_index=h.index,
                 text=_preview(h),
             ))
@@ -101,7 +112,7 @@ def check_heading_hierarchy(model: DocModel, config) -> list:
 
 # --- Check 2: headings are automatically numbered, not typed -----------------
 
-def check_heading_numbering(model: DocModel, config) -> list:
+def check_heading_numbering(model: DocModel, structure, styles) -> list:
     """
     The extractor already did the hard part: 'numbered' is True only if the
     heading is really auto-numbered (resolved through the style chain). Here
@@ -130,7 +141,7 @@ def check_heading_numbering(model: DocModel, config) -> list:
 
 # --- Check 3: a real table of contents field is present ----------------------
 
-def check_toc_present(model: DocModel, config) -> list:
+def check_toc_present(model: DocModel, structure, styles) -> list:
     """
     The extractor set toc_present only if it saw a real TOC field, so a typed
     imitation of a table of contents (v1's list of "1Introduction1" lines)
@@ -147,7 +158,7 @@ def check_toc_present(model: DocModel, config) -> list:
 
 # --- Check 4: the table of contents is linked to the headings -----------------
 
-def check_toc_linked(model: DocModel, config) -> list:
+def check_toc_linked(model: DocModel, structure, styles) -> list:
     """
     A real table of contents does not merely list the headings, it links to
     them: each entry is a hyperlink whose anchor names a "_Toc" bookmark
@@ -188,7 +199,7 @@ def _normalize_heading(text):
     return _LEADING_NUMBER_RE.sub("", (text or "").strip().lower()).strip()
 
 
-def check_required_sections(model: DocModel, config) -> list:
+def check_required_sections(model: DocModel, structure, styles) -> list:
     """
     Only real headings can satisfy a requirement: a section that exists as
     bold text is exactly the fake structure this tool exists to catch. That
@@ -197,14 +208,18 @@ def check_required_sections(model: DocModel, config) -> list:
     is its own piece of information for grading, and nothing gets skipped
     just because another check already fired.
 
+    An empty sections list in the Structure properties means no section
+    requirements at all: any sections are fine, as long as the document is
+    properly structured (the Styles rules still apply in full).
+
     Both sides of the comparison go through the same normalization, so the
-    requirement list stays forgiving about case and stray spaces when it is
-    edited in the config file.
+    section list stays forgiving about case and stray spaces when it is
+    edited in the property file.
     """
     present = {_normalize_heading(b.text)
                for b in model.blocks if b.type == "heading"}
     issues = []
-    for section in config["required_sections"]:
+    for section in structure["sections"]:
         accepted = {_normalize_heading(s) for s in section["accept"]}
         if present & accepted:
             continue
@@ -217,9 +232,44 @@ def check_required_sections(model: DocModel, config) -> list:
     return issues
 
 
+def check_section_order(model: DocModel, structure, styles) -> list:
+    """
+    The Structure properties list the sections in the order they are
+    expected to appear, so a section found earlier in the document than a
+    section listed before it is an issue. Only the sections that actually
+    exist are compared - a missing section is check_required_sections'
+    finding, and reporting it twice would be noise.
+    """
+    # Where in the document does each configured section first appear?
+    heading_positions = []
+    for position, block in enumerate(model.blocks):
+        if block.type == "heading":
+            heading_positions.append((position, _normalize_heading(block.text)))
+
+    found = []  # (position in document, section name), in configured order
+    for section in structure["sections"]:
+        accepted = {_normalize_heading(s) for s in section["accept"]}
+        for position, heading_text in heading_positions:
+            if heading_text in accepted:
+                found.append((position, section["name"]))
+                break
+
+    issues = []
+    for earlier, later in zip(found, found[1:]):
+        earlier_position, earlier_name = earlier
+        later_position, later_name = later
+        if later_position < earlier_position:
+            issues.append(Issue(
+                check="section-order",
+                message=f"Section '{later_name}' appears before "
+                        f"'{earlier_name}', but is expected after it.",
+            ))
+    return issues
+
+
 # --- Check 6: lists use real list formatting, not typed markers --------------
 
-def check_list_formatting(model: DocModel, config) -> list:
+def check_list_formatting(model: DocModel, structure, styles) -> list:
     """
     The extractor marks a paragraph as a real list item when it carries real
     numbering without being a heading, and as a typed one when its text merely
@@ -255,87 +305,79 @@ def _caption_matches(block, kind):
     return block is not None and block.type == "caption" and block.kind == kind
 
 
-def check_table_captions(model: DocModel, config) -> list:
+def _caption_issues(model, kind, expected_position, check_id):
     """
-    Scientific convention places a table's caption ABOVE the table, and the
-    samples follow it strictly: the caption is the block immediately before,
-    with nothing in between. So the test is plain adjacency. Three ways to
-    fail, told apart so the message can say what actually happened: a typed
-    caption in the right place, a caption on the wrong side, or no caption
-    at all.
+    The shared test behind the table and figure caption checks: the block
+    directly on the expected side ("above" or "below", from the Styles
+    properties) must be a real caption of the right kind. The test is plain
+    adjacency, with nothing in between. Three ways to fail, told apart so
+    the message can say what actually happened: a typed caption in the
+    right place, a caption on the wrong side, or no caption at all.
+
+    Inline figures (images pasted into a line of text) are left out,
+    because check_inline_images already owns them and flagging the same
+    image twice would be noise.
     """
     issues = []
+    other_position = "below" if expected_position == "above" else "above"
+
     for i, b in enumerate(model.blocks):
-        if b.type != "table":
+        if b.type != kind:
             continue
+        if kind == "figure" and b.inline:
+            continue
+
         above = model.blocks[i - 1] if i > 0 else None
         below = model.blocks[i + 1] if i + 1 < len(model.blocks) else None
+        expected_side = above if expected_position == "above" else below
+        other_side = below if expected_position == "above" else above
 
-        if _caption_matches(above, "table"):
-            if not above.real:
+        if _caption_matches(expected_side, kind):
+            if not expected_side.real:
                 issues.append(Issue(
-                    check="table-caption",
-                    message="The caption above this table is typed text, "
-                            "not a real caption with automatic numbering.",
-                    block_index=b.index, text=_preview(above),
+                    check=check_id,
+                    message=f"The caption {expected_position} this {kind} "
+                            "is typed text, not a real caption with "
+                            "automatic numbering.",
+                    block_index=b.index, text=_preview(expected_side),
                 ))
-        elif _caption_matches(below, "table"):
+        elif _caption_matches(other_side, kind):
             issues.append(Issue(
-                check="table-caption",
-                message="This table's caption sits below the table; "
-                        "a table caption belongs directly above it.",
-                block_index=b.index, text=_preview(below),
+                check=check_id,
+                message=f"This {kind}'s caption sits {other_position} it; "
+                        f"a {kind} caption belongs directly "
+                        f"{expected_position} it.",
+                block_index=b.index, text=_preview(other_side),
             ))
         else:
             issues.append(Issue(
-                check="table-caption",
-                message="This table has no caption directly above it.",
+                check=check_id,
+                message=f"This {kind} has no caption directly "
+                        f"{expected_position} it.",
                 block_index=b.index,
             ))
     return issues
 
 
-def check_figure_captions(model: DocModel, config) -> list:
-    """
-    The mirror image of the table check: a figure's caption belongs directly
-    BELOW the figure. Inline figures (images pasted into a line of text) are
-    left out here, because check_inline_images already owns them and flagging
-    the same image twice would be noise.
-    """
-    issues = []
-    for i, b in enumerate(model.blocks):
-        if b.type != "figure" or b.inline:
-            continue
-        above = model.blocks[i - 1] if i > 0 else None
-        below = model.blocks[i + 1] if i + 1 < len(model.blocks) else None
+def check_table_captions(model: DocModel, structure, styles) -> list:
+    """Every table has a real caption on the configured side (above, by
+    scientific convention and by default)."""
+    return _caption_issues(model, "table",
+                           styles["captions"]["table_position"],
+                           "table-caption")
 
-        if _caption_matches(below, "figure"):
-            if not below.real:
-                issues.append(Issue(
-                    check="figure-caption",
-                    message="The caption below this figure is typed text, "
-                            "not a real caption with automatic numbering.",
-                    block_index=b.index, text=_preview(below),
-                ))
-        elif _caption_matches(above, "figure"):
-            issues.append(Issue(
-                check="figure-caption",
-                message="This figure's caption sits above the figure; "
-                        "a figure caption belongs directly below it.",
-                block_index=b.index, text=_preview(above),
-            ))
-        else:
-            issues.append(Issue(
-                check="figure-caption",
-                message="This figure has no caption directly below it.",
-                block_index=b.index,
-            ))
-    return issues
+
+def check_figure_captions(model: DocModel, structure, styles) -> list:
+    """Every figure has a real caption on the configured side (below, by
+    scientific convention and by default)."""
+    return _caption_issues(model, "figure",
+                           styles["captions"]["figure_position"],
+                           "figure-caption")
 
 
 # --- Check 9: equations use the real equation format --------------------------
 
-def check_equation_format(model: DocModel, config) -> list:
+def check_equation_format(model: DocModel, structure, styles) -> list:
     """
     A real equation is an OMML math object: Word can renumber it, style it,
     and a screen reader can read it. A formula typed as ordinary text only
@@ -359,7 +401,7 @@ def check_equation_format(model: DocModel, config) -> list:
 
 # --- Check 10: no uncaptioned images pasted into the text ---------------------
 
-def check_inline_images(model: DocModel, config) -> list:
+def check_inline_images(model: DocModel, structure, styles) -> list:
     """
     An image sitting inside a line of text, with no caption anywhere next to
     it, is suspicious: that is how a screenshot of an equation or a symbol
@@ -396,6 +438,7 @@ CHECKS = [
     ("toc-present",       check_toc_present),
     ("toc-linked",        check_toc_linked),
     ("required-sections", check_required_sections),
+    ("section-order",     check_section_order),
     ("list-formatting",   check_list_formatting),
     ("table-caption",     check_table_captions),
     ("figure-caption",    check_figure_captions),
@@ -404,28 +447,30 @@ CHECKS = [
 ]
 
 
-def enabled_checks(config=None) -> list:
-    """The ids of the checks the config leaves enabled, in run order."""
-    if config is None:
-        config = DEFAULTS
-    switches = config.get("checks", {})
+def enabled_checks(styles=None) -> list:
+    """The ids of the checks the Styles leave enabled, in run order."""
+    if styles is None:
+        styles = DEFAULT_STYLES
+    switches = styles.get("checks", {})
     return [check_id for check_id, _ in CHECKS if switches.get(check_id, True)]
 
 
-def run_checks(model: DocModel, config=None) -> list:
+def run_checks(model: DocModel, structure=None, styles=None) -> list:
     """
     Run every enabled check and return all issues in one list.
 
-    Without a config the built-in defaults apply, so callers that do not
-    care about configuration can keep calling run_checks(model).
+    Without property sets the built-in defaults apply, so callers that do
+    not care about configuration can keep calling run_checks(model).
     """
-    if config is None:
-        config = DEFAULTS
-    enabled = set(enabled_checks(config))
+    if structure is None:
+        structure = DEFAULT_STRUCTURE
+    if styles is None:
+        styles = DEFAULT_STYLES
+    enabled = set(enabled_checks(styles))
     issues = []
     for check_id, check in CHECKS:
         if check_id in enabled:
-            issues.extend(check(model, config))
+            issues.extend(check(model, structure, styles))
     return issues
 
 

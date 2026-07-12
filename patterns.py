@@ -13,13 +13,14 @@ same config, and live here rather than in any one format's extractor.
 import re
 
 
-def compile_patterns(config):
+def compile_patterns(styles):
     """
-    Build the language-dependent lookups from the config: which words label
-    which caption kind, and what a typed list marker looks like.
+    Build the language-dependent lookups from the Styles property set:
+    which words label which caption kind, and what a typed list marker
+    looks like.
 
-    The caption labels are localized ("Table"/"Tabelle"), so the config
-    lists the accepted words per kind; the same words recognize typed
+    The caption labels are localized ("Table"/"Tabelle"), so the styles
+    list the accepted words per kind; the same words recognize typed
     captions ("Table 1 ..." with nothing real behind it). A typed list
     marker is a bullet character, a number like "1." or "1)", a lowercase
     letter like "a)" (lowercase only, because a capital with a period would
@@ -29,14 +30,14 @@ def compile_patterns(config):
     ordinary text it marks a fake.
     """
     seq_labels = {}
-    for kind, labels in config["caption_labels"].items():
+    for kind, labels in styles["captions"]["labels"].items():
         for label in labels:
             seq_labels[label.lower()] = kind
     faked_caption_re = re.compile(
         r"^\s*(%s)\s+\d+" % "|".join(seq_labels), re.I)
     typed_list_re = re.compile(
         r"^\s*(?:[-•*·▪–]\s+|\d+[.)]\s+|[a-z][.)]\s+|(?:%s)\d+[.:)]?\s*)"
-        % "|".join(config["list_labels"]))
+        % "|".join(styles["lists"]["labels"]))
     return seq_labels, faked_caption_re, typed_list_re
 
 
