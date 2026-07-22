@@ -199,6 +199,19 @@ def _normalize_heading(text):
     return _LEADING_NUMBER_RE.sub("", (text or "").strip().lower()).strip()
 
 
+def _accepted_names(section):
+    """
+    The set of heading texts that satisfy one required section.
+
+    "accept" is optional: a section written as just {"name": "Introduction"}
+    is accepted under its own name, so a simple property file does not need
+    to repeat the name as its own synonym. "accept" is only needed to ADD
+    other accepted spellings, like a German translation.
+    """
+    synonyms = section.get("accept", [section["name"]])
+    return {_normalize_heading(s) for s in synonyms}
+
+
 def check_required_sections(model: DocModel, structure, styles) -> list:
     """
     Only real headings can satisfy a requirement: a section that exists as
@@ -220,7 +233,7 @@ def check_required_sections(model: DocModel, structure, styles) -> list:
                for b in model.blocks if b.type == "heading"}
     issues = []
     for section in structure["sections"]:
-        accepted = {_normalize_heading(s) for s in section["accept"]}
+        accepted = _accepted_names(section)
         if present & accepted:
             continue
         name = section["name"]
@@ -248,7 +261,7 @@ def check_section_order(model: DocModel, structure, styles) -> list:
 
     found = []  # (position in document, section name), in configured order
     for section in structure["sections"]:
-        accepted = {_normalize_heading(s) for s in section["accept"]}
+        accepted = _accepted_names(section)
         for position, heading_text in heading_positions:
             if heading_text in accepted:
                 found.append((position, section["name"]))
