@@ -28,25 +28,10 @@ import json
 
 
 DEFAULT_STRUCTURE = {
-    # The required sections, in expected order. Each entry has the
-    # canonical name (used in issue messages) and the heading texts that
-    # satisfy it, so a German-language document passes the same requirement
-    # ("Einleitung" satisfies "Introduction"). Matching forgives case,
-    # spacing, and typed numbers on both sides. An empty list switches all
-    # section checking off.
-    "sections": [
-        {"name": "Introduction",          "accept": ["introduction", "einleitung"]},
-        {"name": "State of Research",     "accept": ["state of research", "related work",
-                                                     "stand der forschung", "verwandte arbeiten"]},
-        {"name": "Theoretical Framework", "accept": ["theoretical framework", "theoretischer rahmen",
-                                                     "theoretische grundlagen"]},
-        {"name": "Methodology",           "accept": ["methodology", "methods", "methodik", "methoden"]},
-        {"name": "Results",               "accept": ["results", "ergebnisse"]},
-        {"name": "Discussion",            "accept": ["discussion", "diskussion"]},
-        {"name": "Conclusion",            "accept": ["conclusion", "fazit", "schlussfolgerung"]},
-        {"name": "References",            "accept": ["references", "bibliography",
-                                                     "literaturverzeichnis", "literatur"]},
-    ],
+    # The required sections. Right now it will not enforce the required sections.
+    # If we have to verify that the sections are present in the document, add them in ordered
+    # form in the json file.
+    "sections": [],
 }
 
 

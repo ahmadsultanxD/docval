@@ -1,9 +1,8 @@
 """
 latex_extractor.py - the second extractor: LaTeX source into the same Blocks.
 
-The promise of the architecture gets tested here: read a .tex file and
-produce exactly the representation the Word extractor produces, so that
-rules.py and reporter.py run on it unchanged.
+Read a .tex file and produce exactly the representation the Word extractor produces,
+so that rules.py and reporter.py run on it unchanged.
 
 LaTeX makes some things easier than Word and some things harder:
 
@@ -88,18 +87,32 @@ _PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
 
 
 def _flatten(node):
-    """All the visible text inside a node, in order, as one string."""
-    return "".join(node.text)
+    """
+    All the visible text inside a node, in order, as one string.
+
+    A command's argument can nest another command inside it - an acronym
+    or citation macro used INSIDE a caption or section title, say
+    ("\\caption{The \\ac{CNN} architecture}"). Most TexSoup nodes have a
+    ".text" property that already walks through everything nested and
+    returns just the visible text, but a few of TexSoup's internal node
+    types do not expose that shortcut. For those, we fall back to walking
+    ".contents" ourselves, one piece at a time, recursing until only
+    plain text is left.
+    """
+    if isinstance(node, str):
+        return node
+    if hasattr(node, "text"):
+        return "".join(_flatten(piece) for piece in node.text)
+    if hasattr(node, "contents"):
+        return "".join(_flatten(piece) for piece in node.contents)
+    return str(node)
 
 
 def _arg_text(node):
     """The text of a command's last argument - a section or caption title."""
     if not node.args:
         return ""
-    parts = []
-    for piece in node.args[-1].contents:
-        parts.append(piece if isinstance(piece, str) else _flatten(piece))
-    return "".join(parts)
+    return _flatten(node.args[-1])
 
 
 def extract(path, styles=None):

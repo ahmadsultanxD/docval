@@ -1,0 +1,5 @@
+{
+  "_comment": "Structure: WHAT the document must contain. The sections are checked in this order - a section found before one listed earlier is an issue. Set sections to [] to skip all section checking; the Styles rules still apply in full.",
+
+  "sections": []
+}
