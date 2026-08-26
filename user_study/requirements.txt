@@ -1,0 +1,7 @@
+# The checking engine itself (same as the main project's requirements.txt).
+python-docx>=1.2.0
+
+# The study interface and its Google Sheets logging.
+streamlit>=1.30
+gspread>=6.0
+google-auth>=2.0
