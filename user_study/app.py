@@ -223,10 +223,15 @@ issues = None
 if uploaded is not None:
     try:
         issues = check_document(uploaded)
-    except Exception:
+    except Exception as error:
         st.error(
             "This file could not be read. Please make sure it is a valid "
             ".docx file saved from Word, and try uploading it again.")
+        # Shown so a read failure can be diagnosed from the app itself
+        # instead of only from the Streamlit Cloud logs. Safe to display:
+        # this is a parsing error about the uploaded file's structure, not
+        # anything from the study's own configuration or secrets.
+        st.caption(f"Technical detail: {type(error).__name__}: {error}")
 
 if issues is not None:
     st.header("3. Your report")
