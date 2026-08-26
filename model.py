@@ -37,6 +37,11 @@ class Block:
     style_name: Optional[str] = None  # the Word style name, e.g. "heading 1"
     level: Optional[int] = None       # for a heading: 1, 2, 3, ...
     numbered: bool = False            # True if numbering is automatic (not typed)
+    numbering_optional: bool = False  # for a heading: True when the format
+                                      # numbers headings by itself, so being
+                                      # unnumbered is a deliberate choice by
+                                      # the author (LaTeX's \section*), not a
+                                      # failure to use real structure
 
     kind: Optional[str] = None        # for a caption: "table" or "figure"
     real: Optional[bool] = None       # for a caption, list, or equation: real mechanism vs typed text
