@@ -1,0 +1,10 @@
+# python-docx reads the .docx format; it brings lxml with it, which the
+# Word extractor also uses directly to reach the footnotes part.
+python-docx>=1.2.0
+
+# TexSoup parses LaTeX source for the LaTeX extractor.
+TexSoup>=0.3.3
+
+# pytest runs the test suite in tests/. Only needed for development, not
+# for checking a document, but kept here so one install sets everything up.
+pytest>=8.0

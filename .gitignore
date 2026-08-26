@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+~$*.docx
+venv/
+.venv/
+.idea/
+.vscode/
+
+# Never commit the real Google service account key.
+user_study/.streamlit/secrets.toml
