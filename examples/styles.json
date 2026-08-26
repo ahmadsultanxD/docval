@@ -1,0 +1,29 @@
+{
+  "_comment": "Styles: HOW the document must be formatted. Only include what you want to change - everything else keeps its default. Keys starting with _ are comments.",
+
+  "headings": {
+    "_comment": "The document starts at first_level, and a heading may go at most max_deeper_step levels deeper than the one before it (1 = no skipped levels).",
+    "first_level": 1,
+    "max_deeper_step": 1
+  },
+
+  "captions": {
+    "_comment": "Where captions belong, and which words label them in each accepted language.",
+    "table_position": "above",
+    "figure_position": "below",
+    "labels": {
+      "table":  ["table", "tabelle"],
+      "figure": ["figure", "abbildung"]
+    }
+  },
+
+  "lists": {
+    "_comment": "Custom labeled sequences, like RQ for research questions: 'RQ1:' typed as text is flagged, a real numbered list generating the label passes.",
+    "labels": ["RQ"]
+  },
+
+  "checks": {
+    "_comment": "Switch individual checks off by their id, e.g. \"toc-present\": false for a course that does not require a table of contents.",
+    "inline-image": true
+  }
+}
